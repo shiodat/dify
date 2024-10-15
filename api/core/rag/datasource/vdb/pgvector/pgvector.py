@@ -48,6 +48,15 @@ class PGVectorConfig(BaseModel):
         return values
 
 
+# SQL_CREATE_TABLE = """
+# CREATE TABLE IF NOT EXISTS {table_name} (
+#     id UUID PRIMARY KEY,
+#     text TEXT NOT NULL,
+#     meta JSONB NOT NULL,
+#     embedding vector({dimension}) NOT NULL
+# ) using heap;
+# """
+
 SQL_CREATE_TABLE = """
 CREATE TABLE IF NOT EXISTS {table_name} (
     id UUID PRIMARY KEY,
@@ -55,6 +64,9 @@ CREATE TABLE IF NOT EXISTS {table_name} (
     meta JSONB NOT NULL,
     embedding vector({dimension}) NOT NULL
 ) using heap;
+
+CREATE EXTENSION IF NOT EXISTS pgroonga;
+CREATE INDEX pgroonga_content_index ON {table_name} USING pgroonga (text);
 """
 
 
@@ -164,18 +176,44 @@ class PGVector(BaseVector):
     def search_by_full_text(self, query: str, **kwargs: Any) -> list[Document]:
         top_k = kwargs.get("top_k", 5)
 
+        # with self._get_cursor() as cur:
+        #     cur.execute(
+        #         f"""SELECT meta, text, ts_rank(to_tsvector(coalesce(text, '')), plainto_tsquery(%s)) AS score
+        #         FROM {self.table_name}
+        #         WHERE to_tsvector(text) @@ plainto_tsquery(%s)
+        #         ORDER BY score DESC
+        #         LIMIT {top_k}""",
+        #         # f"'{query}'" is required in order to account for whitespace in query
+        #         (f"'{query}'", f"'{query}'"),
+        #     )
+
+        #     docs = []
+
+        #     for record in cur:
+        #         metadata, text, score = record
+        #         metadata["score"] = score
+        #         docs.append(Document(page_content=text, metadata=metadata))
+
+        keywords = " ".join(query.split("　")).split(" ")
+        if len(keywords) == 0:
+            where_str = None
+        if len(keywords) == 1:
+            where_str = f"&@ {keywords[0]}"
+        else:
+            where_str = "&@~ " + " OR ".join(keywords)
+
+        docs = []
+
         with self._get_cursor() as cur:
             cur.execute(
                 f"""SELECT meta, text, ts_rank(to_tsvector(coalesce(text, '')), plainto_tsquery(%s)) AS score
                 FROM {self.table_name}
-                WHERE to_tsvector(text) @@ plainto_tsquery(%s)
+                WHERE to_tsvector(text) {where_str}
                 ORDER BY score DESC
                 LIMIT {top_k}""",
                 # f"'{query}'" is required in order to account for whitespace in query
-                (f"'{query}'", f"'{query}'"),
+                (f"'{query}'"),
             )
-
-            docs = []
 
             for record in cur:
                 metadata, text, score = record
